@@ -135,10 +135,10 @@ class TimeDependentAgent(DefaultParty):
                 self.terminate()
                 # stop this party and free resources.
             elif isinstance(info, Voting):
-                lastvotes = self._vote(info)
-                val(self.getConnection()).send(lastvotes)
+                self._lastvotes = self._vote(info)
+                val(self.getConnection()).send(self._lastvotes)
             elif isinstance(info, OptIn):
-                val(self.getConnection()).send(lastvotes)
+                val(self.getConnection()).send(self._lastvotes)
         except Exception as ex:
             self.getReporter().log(logging.CRITICAL, "Failed to handle info", ex)
         self._updateRound(info)

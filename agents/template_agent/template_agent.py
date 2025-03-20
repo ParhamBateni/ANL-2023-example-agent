@@ -53,6 +53,8 @@ class TemplateAgent(DefaultParty):
         self.logger.log(logging.INFO, "party is initialized")
 
     def notifyChange(self, data: Inform):
+        # TODO: to be changed
+        # Needs to be changed to load the learned stored data or to add some preprocessing when the agent receives Settings
         """MUST BE IMPLEMENTED
         This is the entry point of all interaction with your agent after is has been initialised.
         How to handle the received data is based on its class type.
@@ -140,6 +142,8 @@ class TemplateAgent(DefaultParty):
         return "Template agent for the ANL 2022 competition"
 
     def opponent_action(self, action):
+        # TODO: to be changed
+        # Bids received from opponent could be all stored in a list and later used in offering a new bid or in estimating the opponent's utility space
         """Process an action that was received from the opponent.
 
         Args:
@@ -175,6 +179,8 @@ class TemplateAgent(DefaultParty):
         self.send_action(action)
 
     def save_data(self):
+        # TODO: to be changed
+        # Needs to be changed to store relevant data for learning capabilities
         """This method is called after the negotiation is finished. It can be used to store data
         for learning capabilities. Note that no extensive calculations can be done within this method.
         Taking too much time might result in your agent being killed, so use it for storage only.
@@ -188,6 +194,8 @@ class TemplateAgent(DefaultParty):
     ###########################################################################################
 
     def accept_condition(self, bid: Bid) -> bool:
+        # TODO: to be changed
+        # Needs to be changed to a smarter condition that determines if the bid is accepted
         if bid is None:
             return False
 
@@ -203,6 +211,9 @@ class TemplateAgent(DefaultParty):
         return all(conditions)
 
     def find_bid(self) -> Bid:
+        # TODO: to be changed
+        # Needs to be changed to a smarter way to find a bid
+
         # compose a list of all possible bids
         domain = self.profile.getDomain()
         all_bids = AllBidsList(domain)
@@ -220,6 +231,9 @@ class TemplateAgent(DefaultParty):
         return best_bid
 
     def score_bid(self, bid: Bid, alpha: float = 0.95, eps: float = 0.1) -> float:
+        # TODO: to be changed or replaced
+        # Needs to be changed to a smarter way to score a bid or replaced by a different method
+
         """Calculate heuristic score for a bid
 
         Args:
