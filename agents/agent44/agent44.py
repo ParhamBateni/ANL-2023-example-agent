@@ -1,3 +1,4 @@
+import json
 import logging
 from random import randint
 from time import time
@@ -29,7 +30,7 @@ from geniusweb.references.Parameters import Parameters
 from tudelft_utilities_logging.ReportToLogger import ReportToLogger
 
 from .utils.opponent_model import OpponentModel
-from .utils.opponent_models.linear_additive_utility_space_optimizer import LinearAdditiveUtilitySpaceOptimizer
+from .utils.opponent_models.linear_additive_utility_space_optimizer import LinearAdditiveUtilitySpaceOptimizer, InitializationMode, NormalizationMode
 from .utils.warmup_counter import WarmupCounter
 
 
@@ -57,21 +58,23 @@ class Agent44(DefaultParty):
 
         # Extra variables added
         self.num_samples = 1000  # Number of samples of bid space to take when finding a bid
-        self.warmup_rounds = 50  # Number of rounds to not accept any offers with utility less than the best bid before conceding other offers
-        self.warmup_counter = WarmupCounter(self.warmup_rounds)
         self.max_bid: Bid = None
 
         self.opponent_model_warmup_rounds = 50  # Number of rounds to not accept any offers with utility less than the best bid before conceding other offers
         self.opponent_model_learning_rate = 0.1  # Learning rate for updating the opponent model
-        self.opponent_model_epochs = 100
-        self.opponent_model_weight_initialization_mode = "uniform"  # Initialization mode for the weights of issues in the opponent utility space model
-        self.opponent_model_value_initialization_mode = "random"  # Initialization mode for the values of issues in the opponent utility space model
+        self.opponent_model_epochs = 50
+        self.opponent_model_weight_initialization_mode = InitializationMode.CUSTOM  # Initialization mode for the weights of issues in the opponent utility space model
+        self.opponent_model_weight_normalization_mode = NormalizationMode.MAX_MIN  # Normalization mode for the weights of issues in the opponent utility space model
 
+        self.opponent_model_value_initialization_mode = InitializationMode.CUSTOM  # Initialization mode for the values of issues in the opponent utility space model
+        self.opponent_model_value_normalization_mode = NormalizationMode.CLIP  # Normalization mode for the values of issues in the opponent utility space model
+
+        self.warmup_counter = WarmupCounter(self.opponent_model_warmup_rounds)
         self.selfishness = 0.8  # Selfishness factor for computing wellfare score of a bid based on my utility and opponents estimated utility
         self.time_pressure_factor = 0.1  # Time pressure factor for computing wellfare score of a bid based on my utility and opponents estimated utility
         self.opponent_model: OpponentModel = None
 
-        self.last_offered_bid = None
+        self.last_offered_bid: Bid = None
 
     def notifyChange(self, data: Inform):
         # TODO: to be changed
@@ -104,13 +107,15 @@ class Agent44(DefaultParty):
             self.domain = self.profile.getDomain()
             profile_connection.close()
 
-            self.opponent_model = LinearAdditiveUtilitySpaceOptimizer(self.domain, self.me.getName(),
+            self.opponent_model = LinearAdditiveUtilitySpaceOptimizer(self.domain, self.me.getName(), self.logger,
                                                                       warmup_rounds=self.opponent_model_warmup_rounds,
                                                                       learning_rate=self.opponent_model_learning_rate,
                                                                       epochs=self.opponent_model_epochs,
                                                                       weights_init_mode=self.opponent_model_weight_initialization_mode,
+                                                                      weights_norm_mode=self.opponent_model_weight_normalization_mode,
                                                                       values_init_mode=self.opponent_model_value_initialization_mode,
-                                                                      init_utility_space=None if self.opponent_model_weight_initialization_mode != "custom_profile" and self.opponent_model_weight_initialization_mode != "custom_profile" else self.profile)
+                                                                      values_norm_mode=self.opponent_model_value_normalization_mode,
+                                                                      init_utility_space=None if self.opponent_model_weight_initialization_mode != InitializationMode.CUSTOM and self.opponent_model_weight_initialization_mode != InitializationMode.CUSTOM else self.profile)
             self.max_bid = BidsWithUtility.create(self.profile).getExtremeBid(isMax=True)
         # ActionDone informs you of an action (an offer or an accept)
         # that is performed by one of the agents (including yourself).
@@ -122,6 +127,7 @@ class Agent44(DefaultParty):
             if actor != self.me:
                 # obtain the name of the opponent, cutting of the position ID.
                 self.other = str(actor).rsplit("_", 1)[0]
+                self.opponent_model.set_opponent_name(self.other)
 
                 # process action done by opponent
                 self.opponent_action(action)
@@ -147,10 +153,7 @@ class Agent44(DefaultParty):
         Returns:
             Capabilities: Capabilities representation class
         """
-        return Capabilities(
-            set(["SAOP"]),
-            set(["geniusweb.profile.utilityspace.LinearAdditive"]),
-        )
+        return Capabilities({"SAOP"}, {"geniusweb.profile.utilityspace.LinearAdditive"}, )
 
     def send_action(self, action: Action):
         """Sends an action to the opponent(s)
@@ -201,20 +204,29 @@ class Agent44(DefaultParty):
             self.last_offered_bid = bid
             action = Offer(self.me, bid)
 
-        self.warmup_counter.update()
+        # self.warmup_counter.update()
         # send the action
         self.send_action(action)
 
     def save_data(self):
-        # TODO: to be changed
-        # Needs to be changed to store relevant data for learning capabilities
         """This method is called after the negotiation is finished. It can be used to store data
         for learning capabilities. Note that no extensive calculations can be done within this method.
         Taking too much time might result in your agent being killed, so use it for storage only.
         """
-        data = "Data for learning (see README.md)"
-        with open(f"{self.storage_dir}/data.md", "w") as f:
-            f.write(data)
+        if self.other is None:
+            self.logger.log(logging.WARNING, "Opponent name was not set; skipping saving opponents predicted profile.")
+        else:
+            print(self.opponent_model.get_utility_space_json_dict())
+            profile_data = json.dumps(self.opponent_model.get_utility_space_json_dict(), sort_keys=True, indent=4)
+            with open(f"{self.storage_dir}/{self.other}_predicted_profile.json", "w") as f:
+                f.write(profile_data)
+
+            if isinstance(self.opponent_model, LinearAdditiveUtilitySpaceOptimizer):
+                loss_data= json.dumps(self.opponent_model.get_epoch_losses_json_dict(), sort_keys=True, indent=4)
+                with open(f"{self.storage_dir}/{self.other}_rounds_loss.json", "w") as f:
+                    f.write(loss_data)
+
+            self.logger.log(logging.INFO, "Saved opponents predicted profile: " + self.other)
 
     ###########################################################################################
     ################################## Example methods below ##################################
@@ -241,9 +253,9 @@ class Agent44(DefaultParty):
         # TODO: to be changed
         # Needs to be changed to a smarter way to find a bid
 
-        if not self.warmup_counter.is_warmed_up():
-            # if the agent is still warming up, find the bid with the highest utility
-            return self.max_bid
+        # if not self.warmup_counter.is_warmed_up():
+        #     # if the agent is still warming up, find the bid with the highest utility
+        #     return self.max_bid
 
         # compose a list of all possible bids
         domain = self.profile.getDomain()
@@ -273,21 +285,23 @@ class Agent44(DefaultParty):
             float: Heuristic score of the bid.
         """
         our_utility = float(self.profile.getUtility(bid))
-        opponent_utility = float(self.opponent_model.get_predicted_utility(bid))
+
+        if self.warmup_counter.is_warmed_up():
+            opponent_utility = float(self.opponent_model.get_predicted_utility(bid))
+        else:
+            opponent_utility = 0.0
+
         score = 0.0
         if metric == "social_wellfare":
             if time_dependant:
                 time_pressure = self._get_time_pressure()
-                score = self.selfishness * time_pressure * our_utility + (
-                        1.0 - self.selfishness * time_pressure) * opponent_utility
+                score = self.selfishness * time_pressure * our_utility + (1.0 - self.selfishness * time_pressure) * opponent_utility
             else:
-                score = self.selfishness * our_utility + (
-                        1.0 - self.selfishness) * opponent_utility
+                score = self.selfishness * our_utility + (1.0 - self.selfishness) * opponent_utility
         elif metric == "nash_product":
             if time_dependant:
                 time_pressure = self._get_time_pressure()
-                score = our_utility ** (self.selfishness * time_pressure) * opponent_utility ** (
-                            1 - self.selfishness * time_pressure)
+                score = our_utility ** (self.selfishness * time_pressure) * opponent_utility ** (1 - self.selfishness * time_pressure)
             else:
                 score = (our_utility ** self.selfishness) * (opponent_utility ** (1 - self.selfishness))
 

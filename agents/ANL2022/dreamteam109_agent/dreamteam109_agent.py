@@ -202,15 +202,16 @@ class DreamTeam109Agent(DefaultParty):
 
             bid = cast(Offer, action).getBid()
 
-            # update opponent model with bid
-            self.opponent_model.update(bid)
-            # set bid as last received
             self.last_received_bid = bid
+            if self.last_received_bid is not None:
+                # update opponent model with bid
+                self.opponent_model.update(bid)
+                # set bid as last received
 
-            if self.opponent_best_bid is None:
-                self.opponent_best_bid = bid
-            elif self.profile.getUtility(bid) > self.profile.getUtility(self.opponent_best_bid):
-                self.opponent_best_bid = bid
+                if self.opponent_best_bid is None:
+                    self.opponent_best_bid = bid
+                elif self.profile.getUtility(bid) > self.profile.getUtility(self.opponent_best_bid):
+                    self.opponent_best_bid = bid
 
     def my_turn(self):
         """This method is called when it is our turn. It should decide upon an action

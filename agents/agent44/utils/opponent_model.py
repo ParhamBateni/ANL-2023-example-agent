@@ -3,19 +3,28 @@ from decimal import Decimal, getcontext, setcontext
 
 from geniusweb.issuevalue.Bid import Bid
 from geniusweb.issuevalue.Domain import Domain
+from geniusweb.profile.utilityspace import ValueSetUtilities
+from geniusweb.profile.utilityspace.UtilitySpace import UtilitySpace
+from tudelft_utilities_logging import ReportToLogger
 
 
 class OpponentModel(ABC):
-    def __init__(self, domain: Domain, **args):
+    def __init__(self, domain: Domain, name: str, logger: ReportToLogger, **args):
         self.received_bids: list[Bid] = []
         self.offered_bids: list[Bid] = []
         self.domain = domain
+        self.name = name
+        self.logger = logger
         self.args = args
 
+        self.opponent_name = name + "s_opponent"
         # Set the decimal precision to 10
         context = getcontext()
         context.prec = 10
         setcontext(context)
+
+    def set_opponent_name(self, name: str):
+        self.opponent_name = name
 
     def update(self, received_bid: Bid, offered_bid: Bid = None):
         # keep track of all bids received and sent
@@ -30,6 +39,14 @@ class OpponentModel(ABC):
 
     @abstractmethod
     def _update(self) -> None:
+        pass
+
+    @abstractmethod
+    def get_utility_space(self) -> UtilitySpace:
+        pass
+
+    @abstractmethod
+    def get_utility_space_json_dict(self) -> dict:
         pass
 
     def __repr__(self) -> str:
