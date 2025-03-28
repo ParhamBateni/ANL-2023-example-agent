@@ -15,6 +15,15 @@ if not RESULTS_DIR.exists():
 #   You need to specify the classpath of 2 agents to start a negotiation. Parameters for the agent can be added as a dict (see example)
 #   You need to specify the preference profiles for both agents. The first profile will be assigned to the first agent.
 #   You need to specify a time deadline (is milliseconds (ms)) we are allowed to negotiate before we end without agreement
+
+# Dreamteam:
+# "class": "agents.ANL2022.dreamteam109_agent.dreamteam109_agent.DreamTeam109Agent",
+#             "parameters": {"storage_dir": "agent_storage/DreamTeam109Agent"},
+# agent44: agents.agent44.agent44.Agent44
+
+#template_agent:
+# "class": "agents.template_agent.template_agent.TemplateAgent",
+#             "parameters": {"storage_dir": "agent_storage/TemplateAgent"},
 settings = {
     "agents": [
         {

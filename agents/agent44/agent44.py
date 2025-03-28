@@ -61,12 +61,12 @@ class Agent44(DefaultParty):
         self.max_bid: Bid = None
 
         self.opponent_model_warmup_rounds = 50  # Number of rounds to not accept any offers with utility less than the best bid before conceding other offers
-        self.opponent_model_learning_rate = 0.5  # Learning rate for updating the opponent model
+        self.opponent_model_learning_rate = 0.2  # Learning rate for updating the opponent model
         self.opponent_model_epochs = 50
-        self.opponent_model_weight_initialization_mode = InitializationMode.CUSTOM  # Initialization mode for the weights of issues in the opponent utility space model
-        self.opponent_model_weight_normalization_mode = NormalizationMode.MAX_MIN  # Normalization mode for the weights of issues in the opponent utility space model
+        self.opponent_model_weight_initialization_mode = InitializationMode.UNIFORM  # Initialization mode for the weights of issues in the opponent utility space model
+        self.opponent_model_weight_normalization_mode = NormalizationMode.CLIP  # Normalization mode for the weights of issues in the opponent utility space model
 
-        self.opponent_model_value_initialization_mode = InitializationMode.CUSTOM  # Initialization mode for the values of issues in the opponent utility space model
+        self.opponent_model_value_initialization_mode = InitializationMode.UNIFORM  # Initialization mode for the values of issues in the opponent utility space model
         self.opponent_model_value_normalization_mode = NormalizationMode.CLIP  # Normalization mode for the values of issues in the opponent utility space model
 
         self.warmup_counter = WarmupCounter(self.opponent_model_warmup_rounds)
