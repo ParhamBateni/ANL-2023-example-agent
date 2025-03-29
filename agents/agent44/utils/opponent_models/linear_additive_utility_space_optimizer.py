@@ -33,6 +33,9 @@ class InitializationMode(Enum):
     def __init__(self, value):
         self._value = value
 
+    def __repr__(self):
+        return self._value
+
     @classmethod
     def from_string(cls, str_mode: str):
         if str_mode == cls.UNIFORM.value:
@@ -57,6 +60,9 @@ class NormalizationMode(Enum):
     def __init__(self, value):
         self._value = value
 
+    def __repr__(self):
+        return self._value
+
     @classmethod
     def from_string(cls, str_mode: str):
         if str_mode == cls.MAX_MIN.value:
@@ -68,15 +74,17 @@ class NormalizationMode(Enum):
 
 
 class LinearAdditiveUtilitySpaceOptimizer(OpponentModel, LinearAdditiveUtilitySpace):
-    def __init__(self, domain: Domain, name: str, logger: ReportToLogger, warmup_rounds: int = 50, learning_rate: float = 0.1, epochs: int = 100,
+    def __init__(self, domain: Domain, name: str, logger: ReportToLogger, warmup_rounds: int = 50, update_rounds: int = 10, learning_rate: float = 0.1, epochs: int = 100,
                  weights_init_mode: InitializationMode = InitializationMode.UNIFORM,
                  weights_norm_mode: NormalizationMode = NormalizationMode.MAX_MIN, values_init_mode: InitializationMode = InitializationMode.RANDOM,
                  values_norm_mode: NormalizationMode = NormalizationMode.CLIP,
                  init_utility_space: LinearAdditiveUtilitySpace = None):
-        OpponentModel.__init__(self, domain, name, logger, warmup_rounds=warmup_rounds, learning_rate=learning_rate, epochs=epochs, weights_init_mode=weights_init_mode,
+        OpponentModel.__init__(self, domain, name, logger, warmup_rounds=warmup_rounds, update_rounds=update_rounds, learning_rate=learning_rate, epochs=epochs,
+                               weights_init_mode=weights_init_mode,
                                weights_normalization_mode=weights_norm_mode,
                                values_init_mode=values_init_mode, values_normalization_mode=values_norm_mode)
         self.warmup_rounds = warmup_rounds
+        self.update_rounds = update_rounds
         self.learning_rate = learning_rate
         self.epochs = epochs
 
@@ -157,7 +165,8 @@ class LinearAdditiveUtilitySpaceOptimizer(OpponentModel, LinearAdditiveUtilitySp
             # Use gradient descent to iteratively update the values and weights
             self._gradient_descent_update()
 
-            # Reset counter and cache
+            # Reset counter
+            self.warmup_counter = WarmupCounter(self.update_rounds)
             self.warmup_counter.reset()
 
     def _update_cache(self) -> None:
@@ -188,7 +197,7 @@ class LinearAdditiveUtilitySpaceOptimizer(OpponentModel, LinearAdditiveUtilitySp
                 return {issue: scaled_weights[issue] / sum_scaled_weights for issue in denormalized_weights}
 
         elif self.weights_norm_mode == NormalizationMode.CLIP:
-            clipped_weights = {issue: np.clip(float(denormalized_weights[issue]), a_min=0, a_max=np.inf) for issue in denormalized_weights}
+            clipped_weights = {issue: np.clip(float(denormalized_weights[issue]), a_min=0, a_max=1) for issue in denormalized_weights}
             sum_clipped_weights = sum(clipped_weights.values())
             return {issue: Decimal(clipped_weights[issue] / sum_clipped_weights) for issue in denormalized_weights}
         else:

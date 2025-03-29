@@ -103,7 +103,7 @@ def run_session(settings) -> Tuple[dict, dict]:
     return results_trace, results_summary
 
 
-def run_tournament(tournament_settings: dict) -> Tuple[list, list]:
+def run_tournament(tournament_settings: dict) -> Tuple[list, list, list]:
     # create agent permutations, ensures that every agent plays against every other agent on both sides of a profile set.
     agents = tournament_settings["agents"]
     profile_sets = tournament_settings["profile_sets"]

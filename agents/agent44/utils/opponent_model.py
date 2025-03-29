@@ -3,7 +3,6 @@ from decimal import Decimal, getcontext, setcontext
 
 from geniusweb.issuevalue.Bid import Bid
 from geniusweb.issuevalue.Domain import Domain
-from geniusweb.profile.utilityspace import ValueSetUtilities
 from geniusweb.profile.utilityspace.UtilitySpace import UtilitySpace
 from tudelft_utilities_logging import ReportToLogger
 
@@ -49,5 +48,8 @@ class OpponentModel(ABC):
     def get_utility_space_json_dict(self) -> dict:
         pass
 
+    def get_repr_json(self) -> dict:
+        return {k: self.args[k].__repr__() for k in self.args}
+
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}({', '.join(map(lambda k, v: f'{k}: {v}',self.args.items()))})"
+        return f"{self.__class__.__name__}({', '.join(map(lambda k: f'{k}: {self.args[k]}', self.args))})"
