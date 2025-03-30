@@ -25,19 +25,19 @@ class OpponentModel(ABC):
     def set_opponent_name(self, name: str):
         self.opponent_name = name
 
-    def update(self, received_bid: Bid, offered_bid: Bid = None):
+    def update(self, received_bid: Bid, offered_bid: Bid = None) -> bool:
         # keep track of all bids received and sent
         self.received_bids.append(received_bid)
         if offered_bid:
             self.offered_bids.append(offered_bid)
-        self._update()
+        return self._update()
 
     @abstractmethod
     def get_predicted_utility(self, bid: Bid) -> Decimal:
         pass
 
     @abstractmethod
-    def _update(self) -> None:
+    def _update(self) -> bool:
         pass
 
     @abstractmethod

@@ -1,16 +1,16 @@
 import logging
 from decimal import Decimal
 from enum import Enum
+from time import time
 
 import numpy as np
-from geniusweb.issuevalue import Value
 from geniusweb.issuevalue.Bid import Bid
 from geniusweb.issuevalue.DiscreteValue import DiscreteValue
 from geniusweb.issuevalue.Domain import Domain
+from geniusweb.profile.utilityspace import ValueSetUtilities
 from geniusweb.profile.utilityspace.DiscreteValueSetUtilities import DiscreteValueSetUtilities
 from geniusweb.profile.utilityspace.LinearAdditiveUtilitySpace import LinearAdditiveUtilitySpace
 from geniusweb.profile.utilityspace.UtilitySpace import UtilitySpace
-from geniusweb.profile.utilityspace.ValueSetUtilities import ValueSetUtilities
 from numpy.typing import NDArray
 from tudelft_utilities_logging import ReportToLogger
 
@@ -22,6 +22,7 @@ class InitializationMode(Enum):
     UNIFORM = "uniform"
     RANDOM = "random"
     CUSTOM = "custom_profile"
+    CONSTANT = "constant"
 
     # TODO: Add a frequency based mode to start the weights based on bids frequencies
 
@@ -48,41 +49,13 @@ class InitializationMode(Enum):
             raise ValueError(f"Invalid initialization mode: {str_mode}")
 
 
-class NormalizationMode(Enum):
-    MAX_MIN = "max_min"
-    CLIP = "clip"
-
-    def __new__(cls, value):
-        obj = object.__new__(cls)
-        obj._value_ = value
-        return obj
-
-    def __init__(self, value):
-        self._value = value
-
-    def __repr__(self):
-        return self._value
-
-    @classmethod
-    def from_string(cls, str_mode: str):
-        if str_mode == cls.MAX_MIN.value:
-            return cls.MAX_MIN
-        elif str_mode == cls.CLIP.value:
-            return cls.CLIP
-        else:
-            raise ValueError(f"Invalid initialization mode: {str_mode}")
-
-
 class LinearAdditiveUtilitySpaceOptimizer(OpponentModel, LinearAdditiveUtilitySpace):
     def __init__(self, domain: Domain, name: str, logger: ReportToLogger, warmup_rounds: int = 50, update_rounds: int = 10, learning_rate: float = 0.1, epochs: int = 100,
-                 weights_init_mode: InitializationMode = InitializationMode.UNIFORM,
-                 weights_norm_mode: NormalizationMode = NormalizationMode.MAX_MIN, values_init_mode: InitializationMode = InitializationMode.RANDOM,
-                 values_norm_mode: NormalizationMode = NormalizationMode.CLIP,
-                 init_utility_space: LinearAdditiveUtilitySpace = None):
+                 weights_init_mode: InitializationMode = InitializationMode.UNIFORM, values_init_mode: InitializationMode = InitializationMode.RANDOM,
+                 init_utility_space: LinearAdditiveUtilitySpace = None, init_constant_value: float = None):
         OpponentModel.__init__(self, domain, name, logger, warmup_rounds=warmup_rounds, update_rounds=update_rounds, learning_rate=learning_rate, epochs=epochs,
                                weights_init_mode=weights_init_mode,
-                               weights_normalization_mode=weights_norm_mode,
-                               values_init_mode=values_init_mode, values_normalization_mode=values_norm_mode)
+                               values_init_mode=values_init_mode, init_constant_value = init_constant_value)
         self.warmup_rounds = warmup_rounds
         self.update_rounds = update_rounds
         self.learning_rate = learning_rate
@@ -94,6 +67,7 @@ class LinearAdditiveUtilitySpaceOptimizer(OpponentModel, LinearAdditiveUtilitySp
         self.values_init_mode = values_init_mode
 
         self.init_utility_space = init_utility_space
+        self.init_constant_value = init_constant_value
 
         if weights_init_mode == InitializationMode.CUSTOM and init_utility_space is None:
             self.logger.log(logging.WARNING, f"Weights custom initialization mode requires a custom utility space profile! Defaulting weights initialization mode to uniform mode.")
@@ -101,54 +75,100 @@ class LinearAdditiveUtilitySpaceOptimizer(OpponentModel, LinearAdditiveUtilitySp
         if values_init_mode == InitializationMode.CUSTOM and init_utility_space is None:
             self.logger.log(logging.WARNING, f"Values custom initialization mode requires a custom utility space profile! Defaulting values initialization mode to uniform mode.")
             self.values_init_mode = InitializationMode.UNIFORM
+        if values_init_mode == InitializationMode.CONSTANT and init_constant_value is None:
+            self.logger.log(logging.WARNING, f"Values constant initialization mode requires a constant init value! Defaulting values initialization mode to uniform mode.")
+            self.values_init_mode = InitializationMode.UNIFORM
 
-        issues_weights = self._initialize_issues_weights()
-        issues_values_utilities = self._initialize_issues_values_utilities()
-        LinearAdditiveUtilitySpace.__init__(self, domain, f"{name}s_opponent_predicted_profile", issues_values_utilities, issues_weights)
+        self.raw_values: NDArray[NDArray[np.float64]] = None
+        self.raw_weights: NDArray[np.float64] = None
 
-        self.weights_norm_mode = weights_norm_mode
-        self.values_norm_mode = values_norm_mode
+        self.normalized_values: NDArray[NDArray[np.float64]] = None
+        self.normalized_weights: NDArray[np.float64] = None
+
+        self._initialize_issues_raw_weights()
+        self._initialize_issues_raw_values()
+
+        self._normalize_issues_weights()
+        self._normalize_issues_values()
+
+        issues_weights_dict = self._construct_issues_weights_dict()
+        issues_values_dict = self._construct_issues_values_dict()
+
+        LinearAdditiveUtilitySpace.__init__(self, domain, f"{name}s_opponent_predicted_profile", issues_values_dict, issues_weights_dict)
 
         self.num_samples_statistics_cached = 0
 
         self.epoch_losses_per_round: list[list[float]] = []
         self.num_samples_per_round: list[int] = []
-        # cache
-        # bids Sum of One Hot Encoded Difference (SOHED) for each issue
-        self.bids_SOHED: dict[str, NDArray[object]] = {issue: np.array([Decimal(0) for _ in range(self.domain.getValues(issue).size())]) for issue in self.domain.getIssues()}
 
-    def _initialize_issues_weights(self, enable_warning: bool = True) -> dict[str, Decimal]:
+        # cache
+        # bids frequency difference between offered and received bids for each issue and value
+        self.bids_frequency_difference: NDArray[NDArray[np.int32]] = np.array([np.zeros(self.domain.getValues(issue).size()) for issue in sorted(self.domain.getIssues())],
+                                                                              dtype=object)
+
+    def _initialize_issues_raw_weights(self, enable_warning: bool = True) -> None:
         num_issues = len(self.domain.getIssues())
         if self.weights_init_mode == InitializationMode.UNIFORM:
-            return {issue: Decimal(1 / num_issues) for issue in self.domain.getIssues()}
+            # softmax weight normalization assumption
+            # processed_weight_i = exp(raw_weight_i)/sum(exp(raw_weight_j))
+            # if all raw_weight_j =0 then processed_weight_i = 1/num_issues -> uniform
+            self.raw_weights = np.zeros(num_issues, dtype=np.float64)
         elif self.weights_init_mode == InitializationMode.RANDOM:
-            weights = np.random.rand(num_issues)
-            sum_weights = weights.sum()
-            return {issue: Decimal(weights[i] / sum_weights) for i, issue in enumerate(self.domain.getIssues())}
+            # We assume the raw weights are in range [-20, 20] because e^20~2^32
+            self.raw_weights = 40.0 * np.random.random(num_issues) - 20
         elif self.weights_init_mode == InitializationMode.CUSTOM:
-            return self.init_utility_space.getWeights()
+            # softmax weight normalization assumption
+            # processed_weight_i = exp(raw_weight_i)/sum(exp(raw_weight_j))
+            # -> log(processed_weight_i) = raw_weight_i - log(sum(exp(raw_weight_j))) -> raw_weight_i = log(processed_weight_i * constant)
+            # here we choose the constant to be num_issues
+            self.raw_weights = np.log([float(weight) * num_issues + 1e-6 for weight in self.init_utility_space.getWeights().values()])
         else:
             # This case should technically never happen
             if enable_warning:
                 self.logger.log(logging.WARNING, f"Initialization mode {self.weights_init_mode} is not implemented for weights! Defaulting to uniform initialization mode.")
-            return self._initialize_issues_weights()
+            self._initialize_issues_raw_weights(False)
 
-    def _initialize_issues_values_utilities(self, enable_warning: bool = True) -> dict[
-        str, ValueSetUtilities]:
-        num_values = {issue: self.domain.getValues(issue).size() for issue in self.domain.getIssues()}
+    def _initialize_issues_raw_values(self, enable_warning: bool = True) -> None:
+        num_values = np.array([self.domain.getValues(issue).size() for issue in sorted(self.domain.getIssues())])
         if self.values_init_mode == InitializationMode.UNIFORM:
-            return {issue: DiscreteValueSetUtilities(
-                {DiscreteValue(value.getValue()): Decimal(1 / num_values[issue]) for value in self.domain.getValues(issue)}) for issue in self.domain.getIssues()}
+            # sigmoid value normalization assumption
+            # processed_value = 1/(1+exp(-raw_value))
+            # for uniform processed_value=1/num_values => raw_value = - log(num_values-1)
+            self.raw_values = np.array([-np.log((nv - 1 + 1e-6) * np.ones(nv)) for nv in num_values], dtype=object)
         elif self.values_init_mode == InitializationMode.RANDOM:
-            return {issue: DiscreteValueSetUtilities(
-                {DiscreteValue(value.getValue()): Decimal(np.random.random()) for value in self.domain.getValues(issue)}) for issue in self.domain.getIssues()}
+            # We assume the raw values are in range [-20, 20] because e^20~2^32
+            self.raw_values = np.array([40.0 * np.random.random(nv) - 20 for nv in num_values], dtype=object)
         elif self.values_init_mode == InitializationMode.CUSTOM:
-            return self.init_utility_space.getUtilities()
+            # sigmoid value normalization assumption
+            # processed_value = 1/(1+exp(-raw_value))
+            # raw_value = -log(1/processed_value - 1)
+            self.raw_values = np.array(
+                [np.array([-np.log(1 / (float(self.init_utility_space.getUtilities()[issue].getUtility(value)) + 1e-6) - 1 + 1e-6) for value in self.domain.getValues(issue)]) for issue in
+                 sorted(self.domain.getIssues())], dtype=object)
+        elif self.values_init_mode == InitializationMode.CONSTANT:
+            self.raw_values = np.array(
+                [np.array([-np.log(1 / (self.init_constant_value + 1e-6) - 1 + 1e-6) for _ in self.domain.getValues(issue)]) for
+                 issue in
+                 sorted(self.domain.getIssues())], dtype=object)
         else:
             # This case should technically never happen
             if enable_warning:
                 self.logger.log(logging.WARNING, f"Initialization mode {self.values_init_mode} is not implemented for values utilities! Defaulting to random initialization mode.")
-            return self._initialize_issues_values_utilities()
+            self._initialize_issues_raw_values(False)
+
+    def _normalize_issues_weights(self) -> None:
+        # softmax weight normalization
+        self.normalized_weights = np.exp(np.clip(self.raw_weights, -20.0, 20.0)) / np.sum(np.exp(np.clip(self.raw_weights, -20.0, 20.0)))
+
+    def _normalize_issues_values(self) -> None:
+        self.normalized_values = np.array([1 / (1 + np.exp(np.clip(-value, -20.0, 20.0))) for value in self.raw_values], dtype=object)
+
+    def _construct_issues_weights_dict(self) -> dict[str, Decimal]:
+        return {issue: Decimal(weight) for issue, weight in zip(sorted(self.domain.getIssues()), self.normalized_weights)}
+
+    def _construct_issues_values_dict(self) -> dict[str, ValueSetUtilities]:
+        return {issue: DiscreteValueSetUtilities({DiscreteValue(value.getValue()): Decimal(utility) for value, utility in zip(self.domain.getValues(issue), utilities)}) for
+                issue, utilities in zip(sorted(self.domain.getIssues()), self.normalized_values)}
 
     def get_predicted_utility(self, bid: Bid) -> Decimal:
         return self.getUtility(bid)
@@ -168,91 +188,61 @@ class LinearAdditiveUtilitySpaceOptimizer(OpponentModel, LinearAdditiveUtilitySp
             # Reset counter
             self.warmup_counter = WarmupCounter(self.update_rounds)
             self.warmup_counter.reset()
+            return True
+        return False
 
     def _update_cache(self) -> None:
         for i in range(self.num_samples_statistics_cached, len(self.received_bids)):
-            # Update SOHED
-            for issue in self.domain.getIssues():
-                self.bids_SOHED[issue] += (
-                        np.array([Decimal(1) if self.domain.getValues(issue).get(index) == self.offered_bids[i].getValue(issue) else Decimal(0) for index in
+            # Update bids_frequency_difference
+            for j, issue in enumerate(sorted(self.domain.getIssues())):
+                self.bids_frequency_difference[j] += (
+                        np.array([1 if self.domain.getValues(issue).get(index) == self.offered_bids[i].getValue(issue) else 0 for index in
                                   range(self.domain.getValues(issue).size())]) - np.array(
-                    [Decimal(1) if self.domain.getValues(issue).get(index) == self.received_bids[i].getValue(issue) else Decimal(0) for index in
+                    [1 if self.domain.getValues(issue).get(index) == self.received_bids[i].getValue(issue) else 0 for index in
                      range(self.domain.getValues(issue).size())])
                 )
         self.num_samples_statistics_cached = len(self.received_bids)
 
     def _reset_profile(self):
-        self._issueWeights = self._initialize_issues_weights(enable_warning=False)
-        self._issueUtilities = self._initialize_issues_values_utilities(enable_warning=False)
+        self._initialize_issues_raw_weights()
+        self._initialize_issues_raw_values()
 
-    def _normalize_weights(self, denormalized_weights: dict[str, Decimal]) -> dict[str, Decimal]:
-        if self.weights_norm_mode == NormalizationMode.MAX_MIN:
-            min_weights = min([denormalized_weights[issue] for issue in denormalized_weights])
-            max_weights = max([denormalized_weights[issue] for issue in denormalized_weights])
-            if min_weights == max_weights:
-                return {issue: Decimal(1 / len(denormalized_weights)) for issue in denormalized_weights}
-            else:
-                scaled_weights = {issue: (denormalized_weights[issue] - min_weights) / (max_weights - min_weights) for issue in denormalized_weights}
-                sum_scaled_weights = sum(scaled_weights.values())
-                return {issue: scaled_weights[issue] / sum_scaled_weights for issue in denormalized_weights}
+        self._normalize_issues_weights()
+        self._normalize_issues_values()
 
-        elif self.weights_norm_mode == NormalizationMode.CLIP:
-            clipped_weights = {issue: np.clip(float(denormalized_weights[issue]), a_min=0, a_max=1) for issue in denormalized_weights}
-            sum_clipped_weights = sum(clipped_weights.values())
-            return {issue: Decimal(clipped_weights[issue] / sum_clipped_weights) for issue in denormalized_weights}
-        else:
-            # Technically we should never reach here
-            raise ValueError(f"{self.weights_norm_mode} normalization mode is not implemented in normalize_weights method!")
+        issues_weights_dict = self._construct_issues_weights_dict()
+        issues_values_dict = self._construct_issues_values_dict()
 
-    def _normalize_values(self, denormalized_values: dict[str, dict[Value, Decimal]]) -> dict[str, dict[Value, Decimal]]:
-        if self.values_norm_mode == NormalizationMode.MAX_MIN:
-            min_values = {issue: min(denormalized_values[issue].values()) for issue in denormalized_values}
-            max_values = {issue: max(denormalized_values[issue].values()) for issue in denormalized_values}
-
-            return {issue: (
-                {value: (denormalized_values[issue][value] - min_values[issue]) / (max_values[issue] - min_values[issue]) for value in denormalized_values[issue]}
-                if max_values[issue] != min_values[issue] else {value: Decimal(np.clip(float(denormalized_values[issue][value]), a_min=0, a_max=1)) for value in
-                                                                denormalized_values[issue]}) for issue in denormalized_values}
-        elif self.values_norm_mode == NormalizationMode.CLIP:
-            return {issue: {value: Decimal(np.clip(float(denormalized_values[issue][value]), a_min=0, a_max=1)) for value in
-                            denormalized_values[issue]} for issue in denormalized_values}
-        else:
-            # Technically we should never reach here
-            raise ValueError(f"{self.values_norm_mode} normalization mode is not implemented in normalize_values method!")
+        self._issueWeights = issues_weights_dict
+        self._issueUtilities = issues_values_dict
 
     def _gradient_descent_update(self) -> None:
         losses = []
         for epoch in range(self.epochs):
             # Compute values gradient
-            values_gradient = {issue: self._issueWeights[issue] * self.bids_SOHED[issue] / self.num_samples_statistics_cached for issue in self.domain.getIssues()}
+            values_gradient = self.normalized_weights  * self.bids_frequency_difference * self.normalized_values * (1 - self.normalized_values)
             # Compute weights gradient
-            weights_gradient = {issue: sum(
-                [self.bids_SOHED[issue][index] * self._issueUtilities[issue].getUtility(self.domain.getValues(issue).get(index)) for index in
-                 range(self.domain.getValues(issue).size())]) / self.num_samples_statistics_cached for issue in self.domain.getIssues()}
+            fv = np.array([f.dot(v) for f, v in zip(self.bids_frequency_difference, self.normalized_values)])
+            weights_gradient = self.normalized_weights   * (- self.normalized_weights.dot(fv) * np.ones(len(self.normalized_weights)) + fv)
 
-            denormalized_values: dict[str, dict[Value, Decimal]] = {}
-            denormalized_weights: dict[str, Decimal] = {}
-            # Update
-            for issue in self.domain.getIssues():
-                # Update values
-                denormalized_values[issue] = {DiscreteValue(self.domain.getValues(issue).get(index).getValue()): self._issueUtilities[issue].getUtility(
-                    self.domain.getValues(issue).get(index)) - Decimal(self.learning_rate) * values_gradient[issue][index] for index in range(self.domain.getValues(issue).size())}
+            # Update values
+            self.raw_values -= self.learning_rate * values_gradient
+            # Update weights
+            # We divide learning rate by a factor to avoid getting stuck in local minima and disallow weights to converge to the boundaries [0,1]
+            # This works because we expect the weights to be almost near the opponents weights so we don't have to change them much
+            self.raw_weights -= self.learning_rate/500 * weights_gradient
 
-                # Update weights
-                denormalized_weights[issue] = self._issueWeights[issue] - Decimal(self.learning_rate) * weights_gradient[issue]
+            self._normalize_issues_values()
+            self._normalize_issues_weights()
 
-            # Normalize values
-            normalized_values = self._normalize_values(denormalized_values)
-            self._issueUtilities = {issue: DiscreteValueSetUtilities(normalized_values[issue]) for issue in normalized_values}
+            issues_weights_dict = self._construct_issues_weights_dict()
+            issues_values_dict = self._construct_issues_values_dict()
 
-            # Normalize weights
-            normalized_weights = self._normalize_weights(denormalized_weights)
-            self._issueWeights = normalized_weights
+            self._issueWeights = issues_weights_dict
+            self._issueUtilities = issues_values_dict
 
             # Update losses
-            loss = sum([self._issueWeights[issue] * sum(
-                [self.bids_SOHED[issue][index] * self._issueUtilities[issue].getUtility(self.domain.getValues(issue).get(index)) for index in
-                 range(self.domain.getValues(issue).size())]) for issue in self.domain.getIssues()]) / self.num_samples_statistics_cached
+            loss = np.mean([float(self.getUtility(self.offered_bids[i]) - self.getUtility(self.received_bids[i])) for i in range(self.num_samples_statistics_cached)])
             losses.append(loss)
         self.num_samples_per_round.append(len(self.offered_bids))
         self.epoch_losses_per_round.append(losses)

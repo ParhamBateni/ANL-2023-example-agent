@@ -1,16 +1,16 @@
 import json
 import logging
+import os
+from pathlib import Path
 from time import time
 from typing import cast
 
-from pathlib import Path
 import numpy as np
 from geniusweb.actions.Accept import Accept
 from geniusweb.actions.Action import Action
 from geniusweb.actions.Offer import Offer
 from geniusweb.actions.PartyId import PartyId
 from geniusweb.bidspace.AllBidsList import AllBidsList
-from geniusweb.bidspace.BidsWithUtility import BidsWithUtility
 from geniusweb.inform.ActionDone import ActionDone
 from geniusweb.inform.Finished import Finished
 from geniusweb.inform.Inform import Inform
@@ -28,13 +28,14 @@ from geniusweb.profileconnection.ProfileConnectionFactory import (
 )
 from geniusweb.progress.ProgressTime import ProgressTime
 from geniusweb.references.Parameters import Parameters
+from numpy.typing import NDArray
 from tudelft_utilities_logging.ReportToLogger import ReportToLogger
 
 from .utils.opponent_model import OpponentModel
-from .utils.opponent_models.linear_additive_utility_space_optimizer import LinearAdditiveUtilitySpaceOptimizer, InitializationMode, NormalizationMode
+from .utils.opponent_models.linear_additive_utility_space_optimizer import LinearAdditiveUtilitySpaceOptimizer, InitializationMode
 from .utils.warmup_counter import WarmupCounter
 
-import os
+
 class Agent44(DefaultParty):
     """
     Template of a Python geniusweb agent.
@@ -42,6 +43,7 @@ class Agent44(DefaultParty):
 
     def __init__(self):
         super().__init__()
+        self.counter = 0
         self.logger: ReportToLogger = self.getReporter()
 
         self.domain: Domain = None
@@ -58,17 +60,15 @@ class Agent44(DefaultParty):
         self.logger.log(logging.INFO, "party is initialized")
 
         # Extra variables added
-        self.max_bid: Bid = None
 
-        self.opponent_model_warmup_rounds = 100  # Number of rounds to not accept any offers with utility less than the best bid before conceding other offers
-        self.opponent_model_update_rounds = 50   # Number of rounds to wait once the opponent model is warmed up for every time before updating opponent model
-        self.opponent_model_learning_rate = 0.1  # Learning rate for updating the opponent model
-        self.opponent_model_epochs = 50
-        self.opponent_model_weight_initialization_mode = InitializationMode.UNIFORM  # Initialization mode for the weights of issues in the opponent utility space model
-        self.opponent_model_weight_normalization_mode = NormalizationMode.CLIP  # Normalization mode for the weights of issues in the opponent utility space model
-
-        self.opponent_model_value_initialization_mode = InitializationMode.UNIFORM  # Initialization mode for the values of issues in the opponent utility space model
-        self.opponent_model_value_normalization_mode = NormalizationMode.CLIP  # Normalization mode for the values of issues in the opponent utility space model
+        self.opponent_model_warmup_rounds: int = 250  # Number of rounds to not accept any offers with utility less than the best bid before conceding other offers. Each round in opponent model means two rounds here one round of offering a bid and one round of receiving a bid.
+        self.opponent_model_update_rounds: int = 500  # Number of rounds to wait once the opponent model is warmed up before updating opponent model every time. Each round in opponent model means two rounds here one round of offering a bid and one round of receiving a bid. Set to -1 to not update the opponent model after the first time
+        self.opponent_model_learning_rate: float = 0.05  # Learning rate for updating the opponent model
+        self.opponent_model_epochs: int = 10
+        # It makes sense to assume the weight that has high value in my profile will likely have high weights in the opponent as well therefore it's best to use my profile issues weights as the starting issues weights
+        self.opponent_model_weight_initialization_mode: InitializationMode = InitializationMode.CUSTOM  # Initialization mode for the weights of issues in the opponent utility space model
+        self.opponent_model_value_initialization_mode: InitializationMode = InitializationMode.CONSTANT  # Initialization mode for the values of issues in the opponent utility space model
+        self.opponent_model_init_constant_value: float = 0.1
         self.opponent_model: OpponentModel = None
 
         # compose a list of all possible bids
@@ -77,15 +77,23 @@ class Agent44(DefaultParty):
 
         # Number of rounds to not accept any offers with utility less than the best bid before conceding other offers
         self.warmup_counter = WarmupCounter(self.opponent_model_warmup_rounds)
-        # Percentage of samples of bid space to take when finding a bid
+        # Percentage of samples of bid space to take when finding a bid before warming up
         # If set to 1 all the bids in all_bids will be considered
-        self.percentage_samples = 0.9
+        self.percentage_samples: float = 0.1
+        self.my_top_bids_utility_pair: NDArray[(Bid, float)] = None
         self.bid_scoring_metric: str = "nash_product"
         self.bid_scoring_is_time_dependant: bool = True
-        self.selfishness = 0.8  # Selfishness factor for computing wellfare score or nash product score of a bid based on my utility and opponents estimated utility
-        self.time_pressure_factor = 0.1  # Time pressure factor for computing wellfare score or nash product score of a bid based on my utility and opponents estimated utility
+        self.selfishness: float = 0.6  # Selfishness factor for computing wellfare score or nash product score of a bid based on my utility and opponents estimated utility
+        self.time_pressure_factor: float = 1  # Time pressure factor for computing wellfare score or nash product score of a bid based on my utility and opponents estimated utility
+        self.percentage_top_bid_candidates: float = 0.005  # Percentage of top score bid candidates to sample from when finding a bid
+        self.num_top_bid_candidates: int = None  # This will be inferred based on the self.percentage_top_bid_candidates.
+        self.min_utility_to_accept: float = None
+        self.reorder_bid_scoring = False
+        self.repr_args = {"selfishness": self.selfishness, "percentage_bid_samples": self.percentage_samples, "bid_scoring_metric": self.bid_scoring_metric,
+                          "bid_scoring_is_time_dependant": self.bid_scoring_is_time_dependant, "time_pressure_factor": self.time_pressure_factor,}
 
-        self.repr_args = {"selfishness":self.selfishness, "percentage_bid_samples": self.percentage_samples, "bid_scoring_metric": self.bid_scoring_metric, "bid_scoring_is_time_dependant": self.bid_scoring_is_time_dependant, "time_pressure_factor": self.time_pressure_factor}
+        self.opponent_best_bid: Bid = None
+        self.top_bids_score_pair: NDArray[(Bid, float)] = None
 
     def notifyChange(self, data: Inform):
         """MUST BE IMPLEMENTED
@@ -95,7 +103,7 @@ class Agent44(DefaultParty):
         Args:
             info (Inform): Contains either a request for action or information.
         """
-
+        # t0 = time()
         # a Settings message is the first message that will be send to your
         # agent containing all the information about the negotiation session.
         if isinstance(data, Settings):
@@ -118,18 +126,29 @@ class Agent44(DefaultParty):
 
             self.opponent_model = LinearAdditiveUtilitySpaceOptimizer(self.domain, self.me.getName(), self.logger,
                                                                       warmup_rounds=self.opponent_model_warmup_rounds,
-                                                                      update_rounds = self.opponent_model_update_rounds,
+                                                                      update_rounds=self.opponent_model_update_rounds,
                                                                       learning_rate=self.opponent_model_learning_rate,
                                                                       epochs=self.opponent_model_epochs,
                                                                       weights_init_mode=self.opponent_model_weight_initialization_mode,
-                                                                      weights_norm_mode=self.opponent_model_weight_normalization_mode,
                                                                       values_init_mode=self.opponent_model_value_initialization_mode,
-                                                                      values_norm_mode=self.opponent_model_value_normalization_mode,
-                                                                      init_utility_space=None if self.opponent_model_weight_initialization_mode != InitializationMode.CUSTOM and self.opponent_model_value_initialization_mode != InitializationMode.CUSTOM else self.profile)
+                                                                      init_utility_space=None if self.opponent_model_weight_initialization_mode != InitializationMode.CUSTOM and self.opponent_model_value_initialization_mode != InitializationMode.CUSTOM else self.profile,
+                                                                      init_constant_value=self.opponent_model_init_constant_value)
             self.repr_args['opponent_model'] = self.opponent_model.get_repr_json()
-            self.max_bid = BidsWithUtility.create(self.profile).getExtremeBid(isMax=True)
             # Make a list of all bids
             self.all_bids = AllBidsList(self.domain)
+
+            # Store the top self.num_top_bid_candidates bids
+            self.num_top_bid_candidates = int(self.percentage_top_bid_candidates * self.all_bids.size())
+            self.my_top_bids_utility_pair = np.array([(self.all_bids.get(index), utility) for utility, index in
+                                                      sorted([(float(self.profile.getUtility(bid)), i) for i, bid in enumerate(self.all_bids)], key=lambda x: x[0], reverse=True)[
+                                                      :int(self.percentage_samples * self.all_bids.size())]])
+            self.min_utility_to_accept = self.my_top_bids_utility_pair[-1][1]
+            print("min utility to accept is ", str(self.min_utility_to_accept))
+            self.top_bids_score_pair = np.array(
+                sorted([(bid, self.score_bid(bid, our_utility=float(utility))) for bid, utility in self.my_top_bids_utility_pair], key=lambda x: x[1], reverse=True))
+
+            self.repr_args["percentage_samples/num_samples"] = f"{self.percentage_samples}/{len(self.my_top_bids_utility_pair)}"
+            self.repr_args["percentage_top_bid_candidates/num_top_bid_candidates"] = f"{self.percentage_top_bid_candidates}/{self.num_top_bid_candidates}"
         # ActionDone informs you of an action (an offer or an accept)
         # that is performed by one of the agents (including yourself).
         elif isinstance(data, ActionDone):
@@ -201,8 +220,14 @@ class Agent44(DefaultParty):
 
             # update opponent model with last received and offered bid
             if self.last_offered_bid is not None:
-                self.opponent_model.update(self.last_received_bid, self.last_offered_bid)
+                # if not self.warmup_counter.is_warmed_up():
+                self.reorder_bid_scoring = self.opponent_model.update(self.last_received_bid, self.last_offered_bid)
                 self.warmup_counter.update()
+
+            if self.opponent_best_bid is None:
+                self.opponent_best_bid = bid
+            elif self.profile.getUtility(bid) > self.profile.getUtility(self.opponent_best_bid):
+                self.opponent_best_bid = bid
 
     def my_turn(self):
         """This method is called when it is our turn. It should decide upon an action
@@ -230,7 +255,6 @@ class Agent44(DefaultParty):
         if self.other is None:
             self.logger.log(logging.WARNING, "Opponent name was not set; skipping saving opponents predicted profile.")
         else:
-            # print(self.opponent_model.get_utility_space_json_dict())
             profile_data = json.dumps(self.opponent_model.get_utility_space_json_dict(), sort_keys=True, indent=4)
             with open(Path(f"{self.storage_dir}").joinpath(f"{self.other}_predicted_profile.json"), "w") as f:
                 f.write(profile_data)
@@ -251,66 +275,85 @@ class Agent44(DefaultParty):
     ###########################################################################################
 
     def accept_condition(self, bid: Bid) -> bool:
-        # TODO: to be changed
-        # Needs to be changed to a smarter condition that determines if the bid is accepted
         if bid is None or not self.warmup_counter.is_warmed_up():
             return False
 
+        if self.last_offered_bid is not None and self.profile.getUtility(bid)>=self.profile.getUtility(self.last_offered_bid):
+            return True
         # progress of the negotiation session between 0 and 1 (1 is deadline)
         progress = self.progress.get(time() * 1000)
 
-        # very basic approach that accepts if the offer is valued above 0.8 and
+        # very basic approach that accepts if the offer is valued above min utility and
         # 95% of the time towards the deadline has passed
         conditions = [
-            self.profile.getUtility(bid) > 0.8,
+            self.profile.getUtility(bid) > self.min_utility_to_accept*(1-(progress-0.95)/0.05),
             progress > 0.95,
         ]
         return all(conditions)
 
     def find_bid(self) -> Bid:
-        if not self.warmup_counter.is_warmed_up():
-            # if the agent is still warming up, find the bid with the highest utility
-            return self.max_bid
-
-        # take self.percentage_samples of all bids to find the best bid according to a heuristic score
-        if self.percentage_samples == 1.0:
-            bids = np.array([self.all_bids.get(index) for index in range(self.all_bids.size())])
-        else:
-            indices = np.arange(0, self.all_bids.size())
-            np.random.shuffle(indices)
-            sample_indices = indices[:int(self.all_bids.size() * self.percentage_samples)]
-            bids = np.array([self.all_bids.get(index) for index in sample_indices])
-
-        bids_score = np.array([self.score_bid(bid) for bid in bids])
-        sorted_bids = bids[np.argsort(-bids_score)]
-
-        # TODO: select a random best bid from top n bids
-        return sorted_bids[0]
-
-    def score_bid(self, bid: Bid) -> float:
-        our_utility = float(self.profile.getUtility(bid))
-
+        # t0 = time()
+        self.counter += 1
         if self.warmup_counter.is_warmed_up():
-            opponent_utility = float(self.opponent_model.get_predicted_utility(bid))
+            # opponent model is warmed up so we should reorder the top bids based on interpolated score which is based on our and opponents utility using self.score_bid
+            if self.reorder_bid_scoring:
+                self.logger.log(logging.INFO, "Reordering bids scores based on opponent model")
+                self.top_bids_score_pair = np.array(
+                    sorted([(bid, self.score_bid(bid, our_utility=float(self.profile.getUtility(bid)))) for bid in self.all_bids], key=lambda x: x[1], reverse=True))
+            found_bid = self.top_bids_score_pair[np.random.randint(0, self.num_top_bid_candidates)][0]
+
         else:
-            opponent_utility = 0.0
-        if self.bid_scoring_metric == "social_wellfare":
+            # Select a random best bid from top self.num_top_bid_candidates bids
+            found_bid = self.my_top_bids_utility_pair[np.random.randint(0, self.num_top_bid_candidates)][0]
+        # If opponent offered a better bid before offer that back again
+        if self.opponent_best_bid is not None and self.profile.getUtility(found_bid) <= self.profile.getUtility(self.opponent_best_bid):
+            return self.opponent_best_bid
+        else:
+            return found_bid
+
+    def score_bid(self, bid: Bid, our_utility: float = None) -> float:
+        our_utility = float(self.profile.getUtility(bid)) if our_utility is None else our_utility
+
+        if self.bid_scoring_metric == "social_welfare":
+            if self.warmup_counter.is_warmed_up():
+                opponent_utility = float(self.opponent_model.get_predicted_utility(bid))
+            else:
+                opponent_utility = 0.0
             if self.bid_scoring_is_time_dependant:
                 time_pressure = self._get_time_pressure()
-                score = self.selfishness * time_pressure * our_utility + (1.0 - self.selfishness * time_pressure) * opponent_utility
+                score = self.selfishness * our_utility + (1.0 - self.selfishness) * (1 - time_pressure) * opponent_utility
             else:
                 score = self.selfishness * our_utility + (1.0 - self.selfishness) * opponent_utility
         elif self.bid_scoring_metric == "nash_product":
+            if self.warmup_counter.is_warmed_up():
+                opponent_utility = float(self.opponent_model.get_predicted_utility(bid))
+            else:
+                opponent_utility = 1.0
             if self.bid_scoring_is_time_dependant:
                 time_pressure = self._get_time_pressure()
+
                 # We use log because the score can get really small
-                score = np.log(our_utility + 1e-6) * self.selfishness * time_pressure + np.log(opponent_utility + 1e-6) * (1 - self.selfishness * time_pressure)
+                score = self.selfishness * np.log(our_utility + 1e-6) + np.log(opponent_utility + 1e-6) * (1 - self.selfishness) * (1 - time_pressure)
             else:
                 # We use log because the score can get really small
-                score = np.log(our_utility + 1e-6) * self.selfishness + np.log(opponent_utility + 1e-6) * (1 - self.selfishness)
+                score = self.selfishness * np.log(our_utility + 1e-6) + np.log(opponent_utility + 1e-6) * (1 - self.selfishness)
 
         else:
             raise ValueError(f"{self.bid_scoring_metric} bid scoring metric is not implemented in score_bid method!")
+        # To consider the bids that are better for our own more often
+        if our_utility <= opponent_utility:
+            if score < 0:
+                score *= 2
+            else:
+                score /= 2
+
+        if self.profile.getReservationBid() is not None and self.profile.getUtility(bid) < self.profile.getUtility(
+                self.profile.getReservationBid()) or our_utility <= self.min_utility_to_accept:
+            if score < 0:
+                score = -10.0
+            else:
+                score = 0.0
+
         return score
 
     def _get_time_pressure(self):

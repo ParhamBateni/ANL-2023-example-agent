@@ -35,11 +35,11 @@ settings = {
             "parameters": {"storage_dir": "agent_storage/Agent44"},
         },
     ],
-    "profiles": ["domains/domain01/profileA.json", "domains/domain01/profileB.json"],
+    "profiles": ["domains/domain00/profileA.json", "domains/domain00/profileB.json"],
     "deadline_time_ms": 10000,
 }
 mode = 'session'
-rounds = 10
+rounds = 1
 
 if mode == 'session':
     session_results_summaries = {"num_offers": [], "agent_1": None, "utility_1": [], "agent_2": None, "utility_2": [], "nash_product": [], "social_welfare": [], "result": []}
