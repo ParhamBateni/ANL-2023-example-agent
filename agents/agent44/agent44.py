@@ -62,7 +62,7 @@ class Agent44(DefaultParty):
         # Extra variables added
 
         self.opponent_model_warmup_rounds: int = 250  # Number of rounds to not accept any offers with utility less than the best bid before conceding other offers. Each round in opponent model means two rounds here one round of offering a bid and one round of receiving a bid.
-        self.opponent_model_update_rounds: int = 500  # Number of rounds to wait once the opponent model is warmed up before updating opponent model every time. Each round in opponent model means two rounds here one round of offering a bid and one round of receiving a bid. Set to -1 to not update the opponent model after the first time
+        self.opponent_model_update_rounds: int = 100  # Number of rounds to wait once the opponent model is warmed up before updating opponent model every time. Each round in opponent model means two rounds here one round of offering a bid and one round of receiving a bid. Set to -1 to not update the opponent model after the first time
         self.opponent_model_learning_rate: float = 0.05  # Learning rate for updating the opponent model
         self.opponent_model_epochs: int = 10
         # It makes sense to assume the weight that has high value in my profile will likely have high weights in the opponent as well therefore it's best to use my profile issues weights as the starting issues weights
