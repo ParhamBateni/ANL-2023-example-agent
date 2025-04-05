@@ -1,7 +1,6 @@
 import json
 import time
 from pathlib import Path
-import numpy as np
 
 from utils.plot_trace import plot_trace
 from utils.runners import run_session, run_tournament
@@ -16,15 +15,6 @@ if not RESULTS_DIR.exists():
 #   You need to specify the classpath of 2 agents to start a negotiation. Parameters for the agent can be added as a dict (see example)
 #   You need to specify the preference profiles for both agents. The first profile will be assigned to the first agent.
 #   You need to specify a time deadline (is milliseconds (ms)) we are allowed to negotiate before we end without agreement
-
-# Dreamteam:
-# "class": "agents.ANL2022.dreamteam109_agent.dreamteam109_agent.DreamTeam109Agent",
-#             "parameters": {"storage_dir": "agent_storage/DreamTeam109Agent"},
-# agent44: agents.agent44.agent44.Agent44
-
-# template_agent:
-# "class": "agents.template_agent.template_agent.TemplateAgent",
-#             "parameters": {"storage_dir": "agent_storage/TemplateAgent"},
 
 ALL_AGENTS = [
     "agents.ANL2022.agent007.agent007.Agent007",
@@ -47,11 +37,12 @@ ALL_AGENTS = [
     "agents.agent44.agent44.Agent44",
 ]
 
-def get_settings_iterator():
-    for dom in range(0, 50):
-        # everytime there is a 80% chance to skip a domain
-        if np.random.rand() < 0.8:
-            continue
+
+def get_settings_iterator(num_domains=50):
+    for dom in range(0, num_domains):
+        # # everytime there is a 80% chance to skip a domain
+        # if np.random.rand() < 0.8:
+        #     continue
         print("=" * 50)
         print(f"Running domain {dom:02d}...")
         print("=" * 50 + "\n")
@@ -66,7 +57,7 @@ def get_settings_iterator():
                         "parameters": {"storage_dir": f"agent_storage/{agent.split('.')[-1]}"},
                     },
                     {
-                        "class": "agents.agent44.agent44.Agent44",
+                        "class": "agents.group44_agent.agent44.Agent44",
                         "parameters": {"storage_dir": "self_storage/Agent44"},
                     },
                 ],
@@ -75,8 +66,9 @@ def get_settings_iterator():
             }
             yield settings, dom
 
+
 mode = 'session'
-rounds = 10
+rounds = 1
 
 if mode == 'session':
     session_results_summaries = {"num_offers": [], "agent_1": None, "utility_1": [], "agent_2": None, "utility_2": [], "nash_product": [], "social_welfare": [], "result": []}
@@ -123,9 +115,23 @@ if mode == 'session':
                 f.write(json.dumps(session_results_summaries, indent=2))
 
 
-# elif mode == 'tournament':
-#     # run a tournament
-#     tournament_steps, tournament_results, tournament_results_summary = run_tournament(settings)
-#
-#     with open(RESULTS_DIR.joinpath("tournament_results_summary.json"), "w", encoding="utf-8") as f:
-#         f.write(json.dumps(tournament_results_summary, indent=2))
+elif mode == 'tournament':
+    settings = {
+        "agents": [
+            {
+                "class": "agents.ANL2022.agent007.agent007.Agent007",
+                "parameters": {"storage_dir": f"agent_storage/Agent007"},
+            },
+            {
+                "class": "agents.group44_agent.agent44.Agent44",
+                "parameters": {"storage_dir": "self_storage/Agent44"},
+            },
+        ],
+        "profiles": [f"domains/domain00/profileA.json", f"domains/domain00/profileB.json"],
+        "deadline_time_ms": 10000,
+    }
+    # run a tournament
+    tournament_steps, tournament_results, tournament_results_summary = run_tournament(settings)
+
+    with open(RESULTS_DIR.joinpath("tournament_results_summary.json"), "w", encoding="utf-8") as f:
+        f.write(json.dumps(tournament_results_summary, indent=2))

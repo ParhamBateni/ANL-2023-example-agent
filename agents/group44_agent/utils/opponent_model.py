@@ -17,9 +17,9 @@ class OpponentModel(ABC):
         self.args = args
 
         self.opponent_name = name + "s_opponent"
-        # Set the decimal precision to 10
+        # Set the decimal precision to 5
         context = getcontext()
-        context.prec = 6
+        context.prec = 5
         setcontext(context)
 
     def set_opponent_name(self, name: str):

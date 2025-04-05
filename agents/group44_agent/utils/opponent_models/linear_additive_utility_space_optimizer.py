@@ -14,8 +14,8 @@ from geniusweb.profile.utilityspace.UtilitySpace import UtilitySpace
 from numpy.typing import NDArray
 from tudelft_utilities_logging import ReportToLogger
 
-from agents.agent44.utils.opponent_model import OpponentModel
-from agents.agent44.utils.warmup_counter import WarmupCounter
+from agents.group44_agent.utils.opponent_model import OpponentModel
+from agents.group44_agent.utils.warmup_counter import WarmupCounter
 
 
 class InitializationMode(Enum):
