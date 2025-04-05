@@ -113,25 +113,3 @@ if mode == 'session':
 
             with open(RESULTS_DIR_AGENT.joinpath(f"all_rounds_session_results_summary.json"), "w", encoding="utf-8") as f:
                 f.write(json.dumps(session_results_summaries, indent=2))
-
-
-elif mode == 'tournament':
-    settings = {
-        "agents": [
-            {
-                "class": "agents.ANL2022.agent007.agent007.Agent007",
-                "parameters": {"storage_dir": f"agent_storage/Agent007"},
-            },
-            {
-                "class": "agents.group44_agent.agent44.Agent44",
-                "parameters": {"storage_dir": "self_storage/Agent44"},
-            },
-        ],
-        "profiles": [f"domains/domain00/profileA.json", f"domains/domain00/profileB.json"],
-        "deadline_time_ms": 10000,
-    }
-    # run a tournament
-    tournament_steps, tournament_results, tournament_results_summary = run_tournament(settings)
-
-    with open(RESULTS_DIR.joinpath("tournament_results_summary.json"), "w", encoding="utf-8") as f:
-        f.write(json.dumps(tournament_results_summary, indent=2))
